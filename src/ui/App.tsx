@@ -878,6 +878,21 @@ const postJson = async <T,>(url: string, payload: unknown): Promise<T> => {
 
 const formatUiError = (error: unknown, lang: Lang): string => {
   const raw = error instanceof Error ? error.message : String(error);
+  if (/ffmpeg_not_found/i.test(raw)) {
+    return lang === "zh"
+      ? "未检测到 ffmpeg。视频/图片压缩属于可选功能，请先安装 ffmpeg 并将其加入 PATH 后重试。Windows 可用 winget/choco，Linux 可用 apt/yum/pacman。"
+      : "ffmpeg not found. Video/image compression is optional. Install ffmpeg and add it to PATH, then retry. Use winget/choco on Windows or apt/yum/pacman on Linux.";
+  }
+  if (/ghostscript_not_found/i.test(raw)) {
+    return lang === "zh"
+      ? "未检测到 Ghostscript。PDF 压缩属于可选功能，请先安装 Ghostscript 并将其加入 PATH 后重试。Windows 常见命令为 gswin64c，Linux 通常为 gs。"
+      : "Ghostscript not found. PDF compression is optional. Install Ghostscript and add it to PATH, then retry. Typical command is gswin64c on Windows and gs on Linux.";
+  }
+  if (/tar_not_found/i.test(raw)) {
+    return lang === "zh"
+      ? "未检测到 tar。该打包功能属于可选能力，请安装 tar 后重试。"
+      : "tar not found. This archive mode is optional. Install tar and try again.";
+  }
   if (/failed to fetch|networkerror|load failed|econnrefused|econnreset/i.test(raw)) {
     return lang === "zh"
       ? "无法连接扫描 API（127.0.0.1:5174）。请先启动 npm run dev:api。"

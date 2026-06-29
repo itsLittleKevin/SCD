@@ -167,6 +167,20 @@ const commandExists = async (command: string): Promise<boolean> => {
   }
 };
 
+const formatCompressionToolError = (error: unknown): string => {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (raw === "ffmpeg_not_found") {
+    return "ffmpeg_not_found: Install ffmpeg and ensure it is available in PATH.";
+  }
+  if (raw === "ghostscript_not_found") {
+    return "ghostscript_not_found: Install Ghostscript and ensure gs/gswin64c is available in PATH.";
+  }
+  if (raw === "tar_not_found") {
+    return "tar_not_found: Install tar and ensure it is available in PATH.";
+  }
+  return raw;
+};
+
 type LiveScanStatus = "running" | "paused" | "cancelled" | "finished" | "failed";
 
 type LiveScanTask = {
@@ -1541,7 +1555,7 @@ const runCompressionBatch = async (payload: CompressionBatchRequest): Promise<Co
     } catch (error) {
       failures.push({
         inputPath,
-        message: error instanceof Error ? error.message : String(error),
+        message: formatCompressionToolError(error),
       });
     }
   }
@@ -2168,7 +2182,7 @@ const server = createServer(async (req, res) => {
         const result = await runCompression(reqPayload);
         sendJson(res, 200, result);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatCompressionToolError(error);
         sendJson(res, 400, { error: "compress_failed", message });
       }
       return;
@@ -2206,7 +2220,7 @@ const server = createServer(async (req, res) => {
         const result = await runCompressionBatch(reqPayload);
         sendJson(res, 200, result);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatCompressionToolError(error);
         sendJson(res, 400, { error: "compress_batch_failed", message });
       }
       return;
