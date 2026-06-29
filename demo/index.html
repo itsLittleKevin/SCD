@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SCD Auto Demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-title">
+        <h1>SCD Auto Demo</h1>
+      </div>
+      <div class="topbar-actions">
+        <button id="langBtn" type="button">语言：简中</button>
+        <button id="resetBtn" type="button">重置导览 / Reset</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <iframe id="appFrame" src="/?demoSandbox=1" title="SCD Demo"></iframe>
+    </main>
+
+    <script type="module" src="./player.js"></script>
+  </body>
+</html>

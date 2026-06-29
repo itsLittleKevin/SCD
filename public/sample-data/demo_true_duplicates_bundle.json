@@ -1,0 +1,174 @@
+{
+  "taskId": "demo-task-true-dup",
+  "createdAt": "2026-06-29T00:00:00.000Z",
+  "config": {
+    "roots": [
+      "D:/Demo"
+    ],
+    "skipOneDrivePlaceholders": true
+  },
+  "summary": {
+    "totalFiles": 6,
+    "totalBytes": 28673522,
+    "duplicateGroupCount": 2,
+    "duplicateFileCount": 5,
+    "duplicateWasteBytes": 8342176,
+    "riskCount": 1
+  },
+  "records": [
+    {
+      "id": "f1",
+      "taskId": "demo-task-true-dup",
+      "path": "D:/Demo/video/A.mp4",
+      "parentPath": "D:/Demo/video",
+      "name": "A.mp4",
+      "ext": ".mp4",
+      "size": 6123456,
+      "ctimeMs": 1719400000000,
+      "mtimeMs": 1719400000000,
+      "atimeMs": 1719400000000,
+      "fsType": "ntfs_like",
+      "platform": "win32",
+      "isDir": false,
+      "scanStatus": "indexed"
+    },
+    {
+      "id": "f2",
+      "taskId": "demo-task-true-dup",
+      "path": "D:/Demo/video/B.mp4",
+      "parentPath": "D:/Demo/video",
+      "name": "B.mp4",
+      "ext": ".mp4",
+      "size": 6123456,
+      "ctimeMs": 1719400100000,
+      "mtimeMs": 1719400100000,
+      "atimeMs": 1719400100000,
+      "fsType": "ntfs_like",
+      "platform": "win32",
+      "isDir": false,
+      "scanStatus": "indexed"
+    },
+    {
+      "id": "f3",
+      "taskId": "demo-task-true-dup",
+      "path": "D:/Demo/video/C.mp4",
+      "parentPath": "D:/Demo/video",
+      "name": "C.mp4",
+      "ext": ".mp4",
+      "size": 6123456,
+      "ctimeMs": 1719400200000,
+      "mtimeMs": 1719400200000,
+      "atimeMs": 1719400200000,
+      "fsType": "ntfs_like",
+      "platform": "win32",
+      "isDir": false,
+      "scanStatus": "indexed"
+    },
+    {
+      "id": "f4",
+      "taskId": "demo-task-true-dup",
+      "path": "D:/Demo/photos/IMG_1001.jpg",
+      "parentPath": "D:/Demo/photos",
+      "name": "IMG_1001.jpg",
+      "ext": ".jpg",
+      "size": 1252332,
+      "ctimeMs": 1719400300000,
+      "mtimeMs": 1719400300000,
+      "atimeMs": 1719400300000,
+      "fsType": "ntfs_like",
+      "platform": "win32",
+      "isDir": false,
+      "scanStatus": "indexed"
+    },
+    {
+      "id": "f5",
+      "taskId": "demo-task-true-dup",
+      "path": "D:/Demo/photos/IMG_1001_copy.jpg",
+      "parentPath": "D:/Demo/photos",
+      "name": "IMG_1001_copy.jpg",
+      "ext": ".jpg",
+      "size": 1252332,
+      "ctimeMs": 1719400400000,
+      "mtimeMs": 1719400400000,
+      "atimeMs": 1719400400000,
+      "fsType": "ntfs_like",
+      "platform": "win32",
+      "isDir": false,
+      "scanStatus": "indexed"
+    },
+    {
+      "id": "f6",
+      "taskId": "demo-task-true-dup",
+      "path": "D:/Demo/logs/service.log",
+      "parentPath": "D:/Demo/logs",
+      "name": "service.log",
+      "ext": ".log",
+      "size": 33490,
+      "ctimeMs": 1719400500000,
+      "mtimeMs": 1719400500000,
+      "atimeMs": 1719400500000,
+      "fsType": "ntfs_like",
+      "platform": "win32",
+      "isDir": false,
+      "scanStatus": "indexed"
+    }
+  ],
+  "duplicateGroups": [
+    {
+      "id": "g1",
+      "taskId": "demo-task-true-dup",
+      "fullHash": "f7c91dbe8a101f6f0f73f2f172f6d775cc3054ca3c90252f5636b5af4d527d11",
+      "totalSize": 18370368,
+      "memberCount": 3,
+      "members": [
+        {
+          "fileId": "f1",
+          "path": "D:/Demo/video/A.mp4",
+          "size": 6123456
+        },
+        {
+          "fileId": "f2",
+          "path": "D:/Demo/video/B.mp4",
+          "size": 6123456
+        },
+        {
+          "fileId": "f3",
+          "path": "D:/Demo/video/C.mp4",
+          "size": 6123456
+        }
+      ],
+      "explanation": "Matched by size, then quick hash, then full content hash. Names and paths are ignored."
+    },
+    {
+      "id": "g2",
+      "taskId": "demo-task-true-dup",
+      "fullHash": "fb0a7648f4ea4f97a09de52f1e4e6af9b9cc6c53f2d6b5b3b4b1ca17b5ad1de8",
+      "totalSize": 2504664,
+      "memberCount": 2,
+      "members": [
+        {
+          "fileId": "f4",
+          "path": "D:/Demo/photos/IMG_1001.jpg",
+          "size": 1252332
+        },
+        {
+          "fileId": "f5",
+          "path": "D:/Demo/photos/IMG_1001_copy.jpg",
+          "size": 1252332
+        }
+      ],
+      "explanation": "Matched by size, then quick hash, then full content hash. Names and paths are ignored."
+    }
+  ],
+  "riskFlags": [
+    {
+      "id": "r1",
+      "taskId": "demo-task-true-dup",
+      "filePath": "D:/Demo/archives/secure.zip",
+      "kind": "encrypted_archive",
+      "detail": "zip_encryption_flag_set",
+      "stage": "risk",
+      "createdAt": "2026-06-29T00:00:01.000Z"
+    }
+  ]
+}

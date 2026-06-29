@@ -1,0 +1,42 @@
+{
+  "name": "diskorg",
+  "version": "1.0.0",
+  "main": "dist/src/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:ui": "vite build",
+    "dev": "tsx src/cli.ts",
+    "dev:api": "tsx src/api-server.ts",
+    "dev:ui": "vite --host 127.0.0.1",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "@types/sql.js": "^1.4.11",
+    "@types/yazl": "^3.3.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "@mdi/js": "^7.4.47",
+    "@mdi/react": "^1.6.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "commander": "^15.0.0",
+    "minimatch": "^10.2.5",
+    "pdf-parse": "^2.4.5",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "sql.js": "^1.14.1",
+    "vite": "^8.1.0",
+    "yauzl-promise": "^4.0.0",
+    "yazl": "^3.3.1"
+  }
+}
