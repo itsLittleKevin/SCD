@@ -59,6 +59,23 @@ body {
   gap: 6px;
 }
 
+.topbar-actions .action-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  background: #152236;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 12px;
+  text-decoration: none;
+  line-height: 1;
+}
+
+.topbar-actions .action-link:hover {
+  border-color: #5d86aa;
+}
+
 .topbar-actions button svg {
   width: 16px;
   height: 16px;
@@ -109,6 +126,11 @@ button:hover {
   }
 
   button {
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+
+  .topbar-actions .action-link {
     padding: 7px 10px;
     font-size: 13px;
   }
