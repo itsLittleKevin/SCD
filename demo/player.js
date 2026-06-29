@@ -456,7 +456,7 @@ const resetGuide = async () => {
   autoStartArmed = true;
   currentIndex = 0;
   await clearHighlight();
-  frame.src = "/?demoSandbox=1";
+  frame.src = "/index.html?demoSandbox=1";
   log("导览已重置");
 };
 
