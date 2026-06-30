@@ -16,6 +16,7 @@ export interface FindDuplicateGroupsOptions {
   concurrency?: number;
   analysisCache?: Map<string, FileAnalysisCacheEntry>;
   onProgress?: (progress: DedupeProgress) => void;
+  onFileError?: (args: { record: FileRecord; stage: "quick_hash" | "full_hash"; error: unknown }) => void;
 }
 
 const readRange = async (
@@ -182,13 +183,21 @@ export const findDuplicateGroups = async (
   for (const bucket of candidates) {
     const byQuick = new Map<string, FileRecord[]>();
     const quickRows = await mapWithConcurrency(bucket, opts.concurrency, async (rec) => {
-      const qh = await resolveQuickHash(rec, opts.quickBytes, opts.analysisCache);
+      let qh: string | null = null;
+      try {
+        qh = await resolveQuickHash(rec, opts.quickBytes, opts.analysisCache);
+      } catch (error) {
+        opts.onFileError?.({ record: rec, stage: "quick_hash", error });
+      }
       quickCompleted += 1;
       opts.onProgress?.({ stage: "quick_hash", completed: quickCompleted, total: quickTotal });
       return { rec, qh };
     });
 
     for (const { rec, qh } of quickRows) {
+      if (!qh) {
+        continue;
+      }
       const arr = byQuick.get(qh) ?? [];
       arr.push(rec);
       byQuick.set(qh, arr);
@@ -201,13 +210,21 @@ export const findDuplicateGroups = async (
       opts.onProgress?.({ stage: "full_hash", completed: fullCompleted, total: fullTotal });
 
       const fullRows = await mapWithConcurrency(qc, opts.concurrency, async (rec) => {
-        const fh = await resolveFullHash(rec, opts.analysisCache);
+        let fh: string | null = null;
+        try {
+          fh = await resolveFullHash(rec, opts.analysisCache);
+        } catch (error) {
+          opts.onFileError?.({ record: rec, stage: "full_hash", error });
+        }
         fullCompleted += 1;
         opts.onProgress?.({ stage: "full_hash", completed: fullCompleted, total: fullTotal });
         return { rec, fh };
       });
 
       for (const { rec, fh } of fullRows) {
+        if (!fh) {
+          continue;
+        }
         const arr = byFull.get(fh) ?? [];
         arr.push(rec);
         byFull.set(fh, arr);

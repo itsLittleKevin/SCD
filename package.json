@@ -1,13 +1,16 @@
 {
   "name": "diskorg",
   "version": "1.0.0",
-  "main": "dist/src/index.js",
+  "main": "desktop/main.cjs",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:ui": "vite build",
+    "build:desktop": "npm run build && npm run build:ui && electron-builder",
+    "build:desktop:win": "npm run build && npm run build:ui && electron-builder --win portable",
     "dev": "tsx src/cli.ts",
     "dev:api": "tsx src/api-server.ts",
     "dev:ui": "vite --host 127.0.0.1",
+    "desktop:start": "npm run build && npm run build:ui && electron .",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -19,6 +22,8 @@
     "@types/node": "^26.0.1",
     "@types/sql.js": "^1.4.11",
     "@types/yazl": "^3.3.1",
+    "electron": "^37.10.3",
+    "electron-builder": "^26.15.3",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
@@ -38,5 +43,23 @@
     "vite": "^8.1.0",
     "yauzl-promise": "^4.0.0",
     "yazl": "^3.3.1"
+  },
+  "build": {
+    "appId": "io.i12n.scd",
+    "productName": "SCD",
+    "asar": false,
+    "files": [
+      "desktop/**/*",
+      "dist/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "portable"
+      ]
+    }
   }
 }

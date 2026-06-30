@@ -10,7 +10,7 @@ import * as yazl from "yazl";
 import { findDuplicateGroups } from "./core/dedupe.js";
 import { createTaskId, scanFiles } from "./core/scanner.js";
 import { SqliteStore } from "./storage/sqliteStore.js";
-import { DuplicateGroup, FileAnalysisCacheEntry, RiskFlag, ScanConfig, ScanResultBundle, ScanStats } from "./types.js";
+import { DuplicateGroup, FileAnalysisCacheEntry, RiskFlag, RiskKind, ScanConfig, ScanResultBundle, ScanStats } from "./types.js";
 
 const HOST = "127.0.0.1";
 const PORT = 5174;
@@ -232,7 +232,7 @@ const isPathWithinRoot = (candidatePath: string, rootPath: string): boolean => {
 
 const requireTrustedClient = (req: IncomingMessage): void => {
   const origin = String(req.headers.origin ?? "").trim();
-  if (origin && !TRUSTED_LOCAL_ORIGIN.test(origin)) {
+  if (origin && origin !== "file://" && !TRUSTED_LOCAL_ORIGIN.test(origin)) {
     throw new HttpError(403, "forbidden_origin");
   }
 
@@ -363,6 +363,139 @@ const summaryFromLiveTask = (task: LiveScanTask) => {
   };
 };
 
+const toHashRiskKind = (message: string): RiskKind => {
+  return /access is denied|eacces|eperm|permission/i.test(message) ? "permission_denied" : "io_error";
+};
+
+const createHashRisk = (
+  taskId: string,
+  filePath: string,
+  stage: "quick_hash" | "full_hash",
+  error: unknown,
+): RiskFlag => {
+  const detail = error instanceof Error ? error.message : String(error);
+  return {
+    id: createTaskId(),
+    taskId,
+    filePath,
+    kind: toHashRiskKind(detail),
+    detail,
+    stage,
+    createdAt: new Date().toISOString(),
+  };
+};
+
+const hydrateLiveTask = async (taskId: string): Promise<LiveScanTask | null> => {
+  const bundle = await buildTaskBundle(taskId);
+  if (!bundle) {
+    return null;
+  }
+
+  const store = await SqliteStore.openOrCreate(DB_PATH);
+  const persistedTask = store.listTasks(500).find((item) => item.id === taskId);
+  const now = new Date().toISOString();
+  const task: LiveScanTask = {
+    taskId,
+    config: bundle.config,
+    status: (persistedTask?.status as LiveScanStatus | undefined) ?? "finished",
+    phase: "finished",
+    phaseProgress: {
+      stage: "indexing",
+      completed: bundle.records.length,
+      total: bundle.records.length,
+    },
+    startedAt: persistedTask?.startedAt ?? bundle.createdAt,
+    updatedAt: persistedTask?.finishedAt ?? persistedTask?.startedAt ?? now,
+    finishedAt: persistedTask?.finishedAt ?? null,
+    lastIndexedAt: null,
+    stats: {
+      dirsVisited: 0,
+      filesVisited: bundle.records.length,
+      filesIndexed: bundle.records.length,
+      filesSkipped: 0,
+      risks: bundle.riskFlags.length,
+    },
+    totalBytes: bundle.summary.totalBytes,
+    records: bundle.records,
+    riskFlags: bundle.riskFlags,
+    duplicateGroups: bundle.duplicateGroups,
+    error: persistedTask?.error ?? null,
+    pauseRequested: false,
+    cancelRequested: false,
+  };
+  liveScans.set(taskId, task);
+  return task;
+};
+
+const runDedupePhase = async (task: LiveScanTask, selectedPaths?: string[]): Promise<void> => {
+  const store = await SqliteStore.openOrCreate(DB_PATH);
+  const analysisCache = task.config.enableUnchangedFileCache === false
+    ? undefined
+    : new Map<string, FileAnalysisCacheEntry>(
+      store.listFileAnalysisCache().map((entry) => [entry.path, entry]),
+    );
+
+  task.status = "running";
+  task.phase = "dedupe";
+  task.error = null;
+  task.updatedAt = new Date().toISOString();
+  task.finishedAt = null;
+  task.phaseProgress = {
+    stage: "quick_hash",
+    completed: 0,
+    total: 0,
+  };
+  task.duplicateGroups = [];
+  store.updateTaskStatus(task.taskId, "running", null, null);
+  store.clearDuplicateGroups(task.taskId);
+  await store.save();
+
+  const selectedSet = selectedPaths && selectedPaths.length > 0 ? new Set(selectedPaths) : null;
+  const sourceRecords = selectedSet ? task.records.filter((record) => selectedSet.has(record.path)) : task.records;
+
+  try {
+    const groups = await findDuplicateGroups(task.taskId, sourceRecords, {
+      quickBytes: task.config.quickHashBytes,
+      concurrency: task.config.dedupeConcurrency,
+      analysisCache,
+      onProgress: (progress) => {
+        task.phaseProgress = progress;
+        task.updatedAt = new Date().toISOString();
+      },
+      onFileError: ({ record, stage, error }) => {
+        const risk = createHashRisk(task.taskId, record.path, stage, error);
+        task.riskFlags.push(risk);
+        task.stats.risks += 1;
+        store.insertRisk(risk);
+      },
+    });
+
+    task.duplicateGroups = groups;
+    for (const group of groups) {
+      store.insertDuplicateGroup(group);
+    }
+    if (analysisCache) {
+      for (const entry of analysisCache.values()) {
+        store.upsertFileAnalysisCache(entry);
+      }
+    }
+
+    task.status = "finished";
+    task.phase = "finished";
+    task.finishedAt = new Date().toISOString();
+    task.updatedAt = task.finishedAt;
+    store.updateTaskStatus(task.taskId, task.status, task.finishedAt, null);
+    await store.save();
+  } catch (error) {
+    task.status = "failed";
+    task.error = error instanceof Error ? error.message : String(error);
+    task.finishedAt = new Date().toISOString();
+    task.updatedAt = task.finishedAt;
+    store.updateTaskStatus(task.taskId, "failed", task.finishedAt, task.error);
+    await store.save();
+  }
+};
+
 const startLiveScan = async (cfg: ScanConfig): Promise<LiveScanTask> => {
   const taskId = createTaskId();
   const now = new Date().toISOString();
@@ -470,27 +603,13 @@ const startLiveScan = async (cfg: ScanConfig): Promise<LiveScanTask> => {
       }
 
       if (task.status === "running") {
-        task.phase = "dedupe";
-        task.phaseProgress = {
-          stage: "quick_hash",
-          completed: 0,
-          total: 0,
-        };
-        const groups = await findDuplicateGroups(taskId, task.records, {
-          quickBytes: cfg.quickHashBytes,
-          concurrency: cfg.dedupeConcurrency,
-          analysisCache,
-          onProgress: (progress) => {
-            task.phaseProgress = progress;
-            task.updatedAt = new Date().toISOString();
-          },
-        });
-        task.duplicateGroups = groups;
-        for (const group of groups) {
-          store.insertDuplicateGroup(group);
-        }
         task.status = "finished";
         task.phase = "finished";
+        task.phaseProgress = {
+          stage: "indexing",
+          completed: task.stats.filesIndexed,
+          total: task.stats.filesIndexed,
+        };
         task.finishedAt = new Date().toISOString();
         task.updatedAt = task.finishedAt;
       }
@@ -2092,7 +2211,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && pathname === "/api/session") {
       const origin = String(req.headers.origin ?? "").trim();
-      if (origin && !TRUSTED_LOCAL_ORIGIN.test(origin)) {
+      if (origin && origin !== "file://" && !TRUSTED_LOCAL_ORIGIN.test(origin)) {
         sendJson(res, 403, { error: "forbidden_origin" });
         return;
       }
@@ -2296,7 +2415,47 @@ const server = createServer(async (req, res) => {
       const taskId = pathname.split("/")[3] ?? "";
       const task = liveScans.get(taskId);
       if (!task) {
-        sendJson(res, 404, { error: "task_not_found" });
+        const bundle = await buildTaskBundle(taskId);
+        if (!bundle) {
+          sendJson(res, 404, { error: "task_not_found" });
+          return;
+        }
+
+        const store = await SqliteStore.openOrCreate(DB_PATH);
+        const persistedTask = store.listTasks(500).find((item) => item.id === taskId);
+        const persistedStatus = persistedTask?.status ?? "finished";
+        const startedAt = persistedTask?.startedAt ?? bundle.createdAt;
+        const finishedAt = persistedTask?.finishedAt ?? null;
+        const endAnchor = finishedAt ? Date.parse(finishedAt) : Date.now();
+        const elapsedMs = endAnchor - Date.parse(startedAt);
+
+        sendJson(res, 200, {
+          taskId,
+          status: persistedStatus,
+          phase: persistedStatus === "running" ? "indexing" : "finished",
+          phaseProgress: {
+            stage: "indexing",
+            completed: bundle.summary.totalFiles,
+            total: bundle.summary.totalFiles,
+          },
+          startedAt,
+          updatedAt: finishedAt ?? startedAt,
+          finishedAt,
+          lastIndexedAt: null,
+          elapsedMs,
+          stats: {
+            dirsVisited: 0,
+            filesVisited: bundle.summary.totalFiles,
+            filesIndexed: bundle.summary.totalFiles,
+            filesSkipped: 0,
+            risks: bundle.summary.riskCount,
+          },
+          summary: bundle.summary,
+          error: persistedTask?.error ?? null,
+          riskFlags: bundle.riskFlags,
+          duplicateGroups: bundle.duplicateGroups,
+          totalRecords: bundle.records.length,
+        });
         return;
       }
 
@@ -2327,7 +2486,25 @@ const server = createServer(async (req, res) => {
       const taskId = pathname.split("/")[3] ?? "";
       const task = liveScans.get(taskId);
       if (!task) {
-        sendJson(res, 404, { error: "task_not_found" });
+        const bundle = await buildTaskBundle(taskId);
+        if (!bundle) {
+          sendJson(res, 404, { error: "task_not_found" });
+          return;
+        }
+
+        const fromRaw = Number(url.searchParams.get("from") ?? "0");
+        const from = Number.isFinite(fromRaw) && fromRaw > 0 ? Math.floor(fromRaw) : 0;
+        const limitRaw = Number(url.searchParams.get("limit") ?? "500");
+        const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(2000, Math.floor(limitRaw)) : 500;
+
+        const records = bundle.records.slice(from, from + limit);
+        sendJson(res, 200, {
+          taskId,
+          from,
+          nextFrom: from + records.length,
+          total: bundle.records.length,
+          records,
+        });
         return;
       }
 
@@ -2343,6 +2520,19 @@ const server = createServer(async (req, res) => {
         nextFrom: from + records.length,
         total: task.records.length,
         records,
+      });
+      return;
+    }
+
+    if (req.method === "GET" && /^\/api\/scan\/[^/]+\/skip-reasons$/.test(pathname)) {
+      const taskId = pathname.split("/")[3] ?? "";
+      const store = await SqliteStore.openOrCreate(DB_PATH);
+      const reasons = store.listFileSkippedReasonCounts(taskId);
+      await store.save();
+      sendJson(res, 200, {
+        taskId,
+        totalSkipped: reasons.reduce((sum, item) => sum + item.count, 0),
+        reasons,
       });
       return;
     }
@@ -2384,6 +2574,27 @@ const server = createServer(async (req, res) => {
       task.updatedAt = new Date().toISOString();
       scheduleLiveScanCleanup(taskId);
       sendJson(res, 202, { taskId, status: "cancelled" });
+      return;
+    }
+
+    if (req.method === "POST" && /^\/api\/scan\/[^/]+\/dedupe$/.test(pathname)) {
+      const taskId = pathname.split("/")[3] ?? "";
+      let task = liveScans.get(taskId) ?? await hydrateLiveTask(taskId);
+      if (!task) {
+        sendJson(res, 404, { error: "task_not_found" });
+        return;
+      }
+      if (task.status === "running") {
+        sendJson(res, 409, { error: "task_already_running", phase: task.phase });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const selectedPaths = toPathList(body);
+      const validPaths = selectedPaths.length > 0
+        ? [...new Set(selectedPaths)].filter((p) => task.records.some((record) => record.path === p))
+        : [];
+      void runDedupePhase(task, validPaths.length > 0 ? validPaths : undefined);
+      sendJson(res, 202, { taskId, status: "running", phase: "dedupe" });
       return;
     }
 
@@ -2486,6 +2697,41 @@ const server = createServer(async (req, res) => {
       }
       const result = await copyPathsToClipboard(paths);
       sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/files/exists-batch") {
+      requireTrustedClient(req);
+      const body = await readJsonBody(req);
+      const paths = [...new Set(toPathList(body))].slice(0, 1000);
+      if (paths.length === 0) {
+        sendJson(res, 400, { error: "paths_required" });
+        return;
+      }
+      const roots = await loadAuthorizedRoots();
+      if (roots.length === 0) {
+        sendJson(res, 409, { error: "no_authorized_roots" });
+        return;
+      }
+      const outside = findOutOfRootPaths(paths, roots);
+      if (outside.length > 0) {
+        sendJson(res, 403, { error: "path_outside_scanned_roots", paths: outside });
+        return;
+      }
+
+      const checks = await Promise.all(paths.map(async (p) => {
+        try {
+          await fs.access(p);
+          return { path: p, exists: true };
+        } catch {
+          return { path: p, exists: false };
+        }
+      }));
+
+      sendJson(res, 200, {
+        existing: checks.filter((item) => item.exists).map((item) => item.path),
+        missing: checks.filter((item) => !item.exists).map((item) => item.path),
+      });
       return;
     }
 

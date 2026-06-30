@@ -47,17 +47,23 @@ export class SqliteStore {
     }
 
     db.run(schemaSql);
+    try {
+      db.run(`ALTER TABLE scan_task ADD COLUMN error TEXT`);
+    } catch {
+      // column already exists
+    }
     return new SqliteStore(db, filePath);
   }
 
   insertTask(taskId: string, cfg: ScanConfig): void {
     const stmt = this.db.prepare(
-      `INSERT INTO scan_task (id, started_at, status, roots_json, config_json) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO scan_task (id, started_at, status, error, roots_json, config_json) VALUES (?, ?, ?, ?, ?, ?)`,
     );
     stmt.run([
       taskId,
       new Date().toISOString(),
       "running",
+      null,
       JSON.stringify(cfg.roots),
       JSON.stringify(cfg),
     ]);
@@ -65,8 +71,12 @@ export class SqliteStore {
   }
 
   finishTask(taskId: string, status: string): void {
-    const stmt = this.db.prepare(`UPDATE scan_task SET status = ?, finished_at = ? WHERE id = ?`);
-    stmt.run([status, new Date().toISOString(), taskId]);
+    this.updateTaskStatus(taskId, status, new Date().toISOString());
+  }
+
+  updateTaskStatus(taskId: string, status: string, finishedAt: string | null, error: string | null = null): void {
+    const stmt = this.db.prepare(`UPDATE scan_task SET status = ?, finished_at = ?, error = ? WHERE id = ?`);
+    stmt.run([status, finishedAt, error, taskId]);
     stmt.free();
   }
 
@@ -188,10 +198,11 @@ export class SqliteStore {
     startedAt: string;
     finishedAt: string | null;
     status: string;
+    error: string | null;
     roots: string[];
   }> {
     const stmt = this.db.prepare(
-      `SELECT id, started_at, finished_at, status, roots_json FROM scan_task ORDER BY started_at DESC LIMIT ?`,
+      `SELECT id, started_at, finished_at, status, error, roots_json FROM scan_task ORDER BY started_at DESC LIMIT ?`,
     );
     stmt.bind([limit]);
 
@@ -200,6 +211,7 @@ export class SqliteStore {
       startedAt: string;
       finishedAt: string | null;
       status: string;
+      error: string | null;
       roots: string[];
     }> = [];
 
@@ -211,6 +223,7 @@ export class SqliteStore {
         startedAt: String(row.started_at ?? ""),
         finishedAt: row.finished_at ? String(row.finished_at) : null,
         status: String(row.status ?? "unknown"),
+        error: row.error ? String(row.error) : null,
         roots: JSON.parse(rootsRaw) as string[],
       });
     }
@@ -253,6 +266,47 @@ export class SqliteStore {
 
     stmt.free();
     return rows;
+  }
+
+  listFileSkippedReasonCounts(taskId: string): Array<{ reason: string; count: number; samplePath: string | null }> {
+    const stmt = this.db.prepare(
+      `SELECT payload_json FROM scan_event WHERE task_id = ? AND kind = ? ORDER BY created_at ASC`,
+    );
+    stmt.bind([taskId, "file_skipped"]);
+
+    const counts = new Map<string, { count: number; samplePath: string | null }>();
+
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>;
+      const payloadRaw = String(row.payload_json ?? "{}");
+      try {
+        const parsed = JSON.parse(payloadRaw) as { reason?: unknown; path?: unknown };
+        const reason = String(parsed.reason ?? "unknown_skip_reason").trim() || "unknown_skip_reason";
+        const samplePath = parsed.path ? String(parsed.path) : null;
+        const current = counts.get(reason);
+        if (current) {
+          current.count += 1;
+          if (!current.samplePath && samplePath) {
+            current.samplePath = samplePath;
+          }
+        } else {
+          counts.set(reason, { count: 1, samplePath });
+        }
+      } catch {
+        const current = counts.get("unknown_skip_reason");
+        if (current) {
+          current.count += 1;
+        } else {
+          counts.set("unknown_skip_reason", { count: 1, samplePath: null });
+        }
+      }
+    }
+
+    stmt.free();
+
+    return [...counts.entries()]
+      .map(([reason, info]) => ({ reason, count: info.count, samplePath: info.samplePath }))
+      .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
   }
 
   listDuplicateGroups(taskId: string): DuplicateGroup[] {
@@ -384,6 +438,18 @@ export class SqliteStore {
       stmt.run([taskId]);
       stmt.free();
     }
+  }
+
+  clearDuplicateGroups(taskId: string): void {
+    const deleteDuplicateMembersStmt = this.db.prepare(
+      `DELETE FROM duplicate_member WHERE group_id IN (SELECT id FROM duplicate_group WHERE task_id = ?)` ,
+    );
+    deleteDuplicateMembersStmt.run([taskId]);
+    deleteDuplicateMembersStmt.free();
+
+    const stmt = this.db.prepare(`DELETE FROM duplicate_group WHERE task_id = ?`);
+    stmt.run([taskId]);
+    stmt.free();
   }
 
   pruneFileAnalysisCacheOlderThan(cutoffIso: string): void {

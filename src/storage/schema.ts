@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS scan_task (
   started_at TEXT,
   finished_at TEXT,
   status TEXT,
+  error TEXT,
   roots_json TEXT,
   config_json TEXT
 );

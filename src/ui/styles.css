@@ -252,6 +252,16 @@ select optgroup {
   transform: none;
 }
 
+.ghost-button.success {
+  border-color: rgba(104, 214, 137, 0.65);
+  background: rgba(104, 214, 137, 0.2);
+  color: #dbffe6;
+}
+
+.ghost-button.success:hover {
+  border-color: rgba(104, 214, 137, 0.9);
+}
+
 .error-panel {
   margin-top: 16px;
   padding: 16px 18px;
@@ -549,6 +559,15 @@ select optgroup {
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--line);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mini-item strong,
+.mini-item span,
+.mini-item small {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .mini-item-button {
@@ -561,6 +580,11 @@ select optgroup {
 .mini-item-button.is-active {
   border-color: rgba(255, 180, 84, 0.45);
   background: rgba(255, 180, 84, 0.12);
+}
+
+.risk-item-active {
+  border-color: rgba(255, 102, 117, 0.5);
+  background: rgba(255, 102, 117, 0.1);
 }
 
 .duplicate-hash-row {
@@ -600,11 +624,85 @@ select optgroup {
 }
 
 .panel-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
+  display: block;
   margin-bottom: 14px;
+}
+
+.panel-head-title h2 {
+  margin: 0;
+}
+
+.panel-head-title {
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.panel-head-summary {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.panel-head-grid {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.panel-head-grid-4 {
+  grid-template-columns: 35fr 15fr 30fr 20fr;
+  align-items: stretch;
+}
+
+.panel-head-grid-4 > * {
+  min-width: 0;
+}
+
+.panel-control-group {
+  padding: 0;
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.panel-control-group .ghost-button,
+.panel-control-group .toggle-chip,
+.panel-control-group .task-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.panel-control-group .toggle-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-control-group-paging {
+  align-content: stretch;
+}
+
+.panel-head-pager {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.panel-head-pager-split {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.panel-head-pager-split .ghost-button {
+  min-width: 0;
+  flex: 0 1 48%;
+  padding-inline: 10px;
 }
 
 .panel-actions {
@@ -758,7 +856,7 @@ tr.selected {
 }
 
 .ext-cell {
-  min-width: 138px;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -768,7 +866,7 @@ tr.selected {
 }
 
 .size-cell {
-  min-width: 88px;
+  min-width: 72px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -786,17 +884,27 @@ tr.selected {
 
 .badge {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   padding: 6px 10px;
   border-radius: 999px;
   background: rgba(119, 214, 255, 0.12);
   border: 1px solid rgba(119, 214, 255, 0.22);
   color: #cfeeff;
   font-size: 12px;
-  white-space: nowrap;
+  white-space: normal;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
+}
+
+tr.risk-selected {
+  background: rgba(255, 102, 117, 0.12);
+}
+
+tr.risk-selected:hover,
+tr.selected.risk-selected {
+  background: rgba(255, 102, 117, 0.16);
 }
 
 .detail-panel {
@@ -869,6 +977,15 @@ tr.selected {
   word-break: break-word;
 }
 
+.risk-signal-box {
+  background: rgba(255, 102, 117, 0.08);
+  border-color: rgba(255, 102, 117, 0.24);
+}
+
+.risk-detail-grid {
+  gap: 10px;
+}
+
 .signal-box {
   padding: 14px;
   border-radius: 18px;
@@ -919,10 +1036,15 @@ tr.selected {
     min-height: auto;
     max-height: none;
   }
+
 }
 
 @media (max-width: 900px) {
   .llm-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-head-grid-4 {
     grid-template-columns: 1fr;
   }
 }

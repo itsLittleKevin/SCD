@@ -54,6 +54,13 @@ type RiskFlagView = {
   detail: string;
 };
 
+type RiskFocusState = {
+  key: string;
+  risk: RiskFlagView;
+  resolvedPath: string | null;
+  resolvedTarget: "file" | "directory" | "path";
+};
+
 type ScanBundleView = {
   config?: {
     roots?: string[];
@@ -89,6 +96,12 @@ type LiveScanSummaryView = {
   duplicateFileCount: number;
   duplicateWasteBytes: number;
   riskCount: number;
+};
+
+type SkipReasonView = {
+  reason: string;
+  count: number;
+  samplePath: string | null;
 };
 
 type LiveScanStatusPayload = {
@@ -345,10 +358,8 @@ const enCollator = new Intl.Collator("en", {
 
 const NO_EXT = "(none)";
 const ODD_EXT = "(odd-ext)";
-const TABLE_ROW_HEIGHT = 52;
-const TABLE_OVERSCAN = 16;
-const TABLE_COLUMN_COUNT = 6;
 const SUFFIX_VISIBLE_LIMIT = 80;
+const PAGE_SIZE_OPTIONS = [100, 500, 1000] as const;
 
 const getDisplayName = (row: ScanRow): string => row.name ?? row.path.split(/[\\/]/).pop() ?? row.path;
 
@@ -421,6 +432,73 @@ const formatScanStatus = (status: string | undefined, lang: Lang): string => {
     return lang === "zh" ? "失败" : "Failed";
   }
   return status?.trim() || (lang === "zh" ? "已索引" : "Indexed");
+};
+
+const formatLiveStatusLabel = (status: LiveScanStatusView | null, phase: LiveScanPhaseView | null, lang: Lang): string => {
+  if (!status) {
+    return lang === "zh" ? "空闲" : "idle";
+  }
+  if (status === "running" && phase === "indexing") {
+    return lang === "zh" ? "建立索引中" : "Indexing";
+  }
+  if (status === "running" && phase === "dedupe") {
+    return lang === "zh" ? "查重中" : "Deduplicating";
+  }
+  if (status === "finished" && phase === "finished") {
+    return lang === "zh" ? "索引完成" : "Indexed";
+  }
+  if (status === "paused") {
+    return lang === "zh" ? "已暂停" : "Paused";
+  }
+  if (status === "cancelled") {
+    return lang === "zh" ? "已取消" : "Cancelled";
+  }
+  if (status === "failed") {
+    return lang === "zh" ? "失败" : "Failed";
+  }
+  return status;
+};
+
+const formatLivePhaseLabel = (phase: LiveScanPhaseView | null, status: LiveScanStatusView | null, lang: Lang): string => {
+  if (!phase) {
+    return lang === "zh" ? "空闲" : "idle";
+  }
+  if (phase === "indexing") {
+    return lang === "zh" ? "建立索引" : "Indexing";
+  }
+  if (phase === "dedupe") {
+    return lang === "zh" ? "查找重复" : "Deduplication";
+  }
+  if (phase === "finished" && status === "finished") {
+    return lang === "zh" ? "可开始查重" : "Ready for dedupe";
+  }
+  return phase;
+};
+
+const formatSkipReasonLabel = (reason: string, lang: Lang): string => {
+  const mapZh: Record<string, string> = {
+    default_cache_rule: "默认缓存目录",
+    user_exclude_path: "用户排除路径",
+    exclude_glob: "排除通配规则",
+    not_in_include_glob: "不在包含规则内",
+    below_min_size: "小于最小体积",
+    above_max_size: "大于最大体积",
+    onedrive_placeholder: "OneDrive 占位文件",
+    encrypted_content: "加密内容",
+    unknown_skip_reason: "未知跳过原因",
+  };
+  const mapEn: Record<string, string> = {
+    default_cache_rule: "Default cache folder rule",
+    user_exclude_path: "User excluded path",
+    exclude_glob: "Excluded by glob",
+    not_in_include_glob: "Not in include glob",
+    below_min_size: "Below minimum size",
+    above_max_size: "Above maximum size",
+    onedrive_placeholder: "OneDrive placeholder",
+    encrypted_content: "Encrypted content",
+    unknown_skip_reason: "Unknown skip reason",
+  };
+  return lang === "zh" ? (mapZh[reason] ?? reason) : (mapEn[reason] ?? reason);
 };
 
 const buildDirectorySummaries = (fileRows: ScanRow[], scanRoots: string[]): DirectorySummaryRow[] => {
@@ -815,6 +893,25 @@ const startScanFromApi = async (root: string): Promise<{ taskId: string; status:
   return payload;
 };
 
+const startDedupeFromApi = async (
+  taskId: string,
+  selectedPaths?: string[],
+): Promise<{ taskId: string; status: LiveScanStatusView; phase?: LiveScanPhaseView }> => {
+  const response = await fetch(`/api/scan/${encodeURIComponent(taskId)}/dedupe`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ paths: selectedPaths ?? [] }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to start dedupe: ${response.status}`);
+  }
+
+  return (await response.json()) as { taskId: string; status: LiveScanStatusView; phase?: LiveScanPhaseView };
+};
+
 const getLiveScanStatusFromApi = async (taskId: string): Promise<LiveScanStatusPayload> => {
   const response = await fetch(`/api/scan/${encodeURIComponent(taskId)}/status`);
   if (!response.ok) {
@@ -826,8 +923,10 @@ const getLiveScanStatusFromApi = async (taskId: string): Promise<LiveScanStatusP
 const getLiveScanRecordsFromApi = async (
   taskId: string,
   from: number,
+  limit = 2000,
 ): Promise<{ nextFrom: number; records: ScanRow[] }> => {
-  const response = await fetch(`/api/scan/${encodeURIComponent(taskId)}/records?from=${from}&limit=500`);
+  const safeLimit = Math.max(1, Math.min(2000, Math.floor(limit)));
+  const response = await fetch(`/api/scan/${encodeURIComponent(taskId)}/records?from=${from}&limit=${safeLimit}`);
   if (!response.ok) {
     throw new Error(`Failed to load scan records: ${response.status}`);
   }
@@ -839,6 +938,32 @@ const getLiveScanRecordsFromApi = async (
     nextFrom: payload.nextFrom,
     records: payload.records ?? [],
   };
+};
+
+const getLiveScanSkipReasonsFromApi = async (
+  taskId: string,
+): Promise<{ totalSkipped: number; reasons: SkipReasonView[] }> => {
+  const response = await fetch(`/api/scan/${encodeURIComponent(taskId)}/skip-reasons`);
+  if (!response.ok) {
+    throw new Error(`Failed to load skipped reasons: ${response.status}`);
+  }
+  const payload = (await response.json()) as {
+    totalSkipped?: number;
+    reasons?: SkipReasonView[];
+  };
+  return {
+    totalSkipped: Number(payload.totalSkipped ?? 0),
+    reasons: Array.isArray(payload.reasons) ? payload.reasons : [],
+  };
+};
+
+const getMissingPathsFromApi = async (paths: string[]): Promise<string[]> => {
+  const unique = [...new Set(paths)].slice(0, 1000);
+  if (unique.length === 0) {
+    return [];
+  }
+  const payload = await postJson<{ missing?: string[] }>("/api/files/exists-batch", { paths: unique });
+  return Array.isArray(payload.missing) ? payload.missing : [];
 };
 
 const pauseLiveScanFromApi = async (taskId: string): Promise<void> => {
@@ -1081,11 +1206,13 @@ export function App() {
   const [sortBy, setSortBy] = useState<SortKey | null>("size");
   const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [selectedRiskFocus, setSelectedRiskFocus] = useState<RiskFocusState | null>(null);
   const [selectedRows, setSelectedRows] = useState<string[]>([]);
   const [showFiles, setShowFiles] = useState(true);
   const [showDirectories, setShowDirectories] = useState(true);
   const [selectedDuplicateGroupId, setSelectedDuplicateGroupId] = useState<string | null>(null);
   const [liveTaskId, setLiveTaskId] = useState<string | null>(null);
+  const [livePollingTaskId, setLivePollingTaskId] = useState<string | null>(null);
   const [liveStatus, setLiveStatus] = useState<LiveScanStatusView | null>(null);
   const [livePhase, setLivePhase] = useState<LiveScanPhaseView | null>(null);
   const [livePhaseProgress, setLivePhaseProgress] = useState<{
@@ -1095,15 +1222,21 @@ export function App() {
   } | null>(null);
   const [liveElapsedMs, setLiveElapsedMs] = useState(0);
   const [liveStats, setLiveStats] = useState<LiveScanStatsView | null>(null);
+  const [liveSkipReasons, setLiveSkipReasons] = useState<SkipReasonView[]>([]);
+  const [scanCompletePendingAck, setScanCompletePendingAck] = useState(false);
   const [lastIndexedAt, setLastIndexedAt] = useState<string | null>(null);
   const [recordCursor, setRecordCursor] = useState(0);
   const [showAllSuffixes, setShowAllSuffixes] = useState(false);
-  const [tableStartIndex, setTableStartIndex] = useState(0);
-  const [tableViewportHeight, setTableViewportHeight] = useState(520);
+  const [pageSize, setPageSize] = useState<number>(500);
+  const [pageIndex, setPageIndex] = useState(0);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  const terminalNotifiedTaskRef = useRef<string | null>(null);
+  const finalBundleLoadedTaskRef = useRef<string | null>(null);
+  const existsSyncCursorRef = useRef(0);
+  const existsSyncRunningRef = useRef(false);
 
   const tipText = {
     scanPath: lang === "zh" ? "输入你想扫描的根目录。目录汇总和文件结果都只在这个范围内生成。" : "Choose the root folder to scan. File and directory results stay scoped to this range.",
@@ -1200,7 +1333,7 @@ export function App() {
   }, [defaultSource, demoSandbox]);
 
   useEffect(() => {
-    if (!liveTaskId) {
+    if (!livePollingTaskId) {
       return;
     }
 
@@ -1208,7 +1341,7 @@ export function App() {
 
     const sync = async () => {
       try {
-        const status = await getLiveScanStatusFromApi(liveTaskId);
+        const status = await getLiveScanStatusFromApi(livePollingTaskId);
         if (disposed) return;
 
         setLiveStatus(status.status);
@@ -1218,8 +1351,107 @@ export function App() {
         setLiveStats(status.stats);
         setLastIndexedAt(status.lastIndexedAt);
 
-        if (status.totalRecords > recordCursor) {
-          const chunk = await getLiveScanRecordsFromApi(liveTaskId, recordCursor);
+        const terminal = status.status === "finished" || status.status === "paused" || status.status === "cancelled" || status.status === "failed";
+
+        if (terminal) {
+          let finalDataReady = false;
+
+          if (status.status === "cancelled") {
+            finalDataReady = true;
+          } else if (finalBundleLoadedTaskRef.current === status.taskId) {
+            finalDataReady = true;
+          } else {
+            try {
+              const finalBundle = await loadTaskBundleFromApi(status.taskId);
+              if (disposed) return;
+              setState({ kind: "ready", bundle: finalBundle });
+              setRecordCursor(finalBundle.records.length);
+              finalBundleLoadedTaskRef.current = status.taskId;
+              finalDataReady = true;
+            } catch {
+              // If final bundle fetch fails transiently, keep polling and stream any remaining records.
+            }
+
+            if (!finalDataReady && status.totalRecords > recordCursor) {
+              let nextCursor = recordCursor;
+              for (let i = 0; i < 8 && nextCursor < status.totalRecords; i += 1) {
+                const chunk = await getLiveScanRecordsFromApi(livePollingTaskId, nextCursor, 2000);
+                if (disposed) return;
+                nextCursor = chunk.nextFrom;
+                setRecordCursor(nextCursor);
+                if (chunk.records.length > 0) {
+                  setState((current) => {
+                    if (current.kind !== "ready") {
+                      return current;
+                    }
+                    return {
+                      ...current,
+                      bundle: {
+                        ...current.bundle,
+                        records: [...current.bundle.records, ...chunk.records],
+                      },
+                    };
+                  });
+                }
+                if (chunk.records.length === 0) {
+                  break;
+                }
+              }
+              finalDataReady = nextCursor >= status.totalRecords;
+            }
+          }
+
+          if (terminalNotifiedTaskRef.current !== status.taskId) {
+            terminalNotifiedTaskRef.current = status.taskId;
+            setScanBusy(false);
+
+            if (status.status === "finished" || status.status === "paused" || status.status === "failed") {
+              try {
+                const skipSummary = await getLiveScanSkipReasonsFromApi(status.taskId);
+                if (!disposed) {
+                  setLiveSkipReasons(skipSummary.reasons);
+                }
+              } catch {
+                if (!disposed) {
+                  setLiveSkipReasons([]);
+                }
+              }
+            }
+
+            if (status.status === "finished") {
+              setScanCompletePendingAck(true);
+            }
+
+            if (status.status === "paused") {
+              showToast(lang === "zh" ? "扫描已暂停，仅保留已扫描内容。" : "Scan paused. Showing scanned content only.");
+            }
+
+            if (status.status === "cancelled") {
+              setState((current) =>
+                current.kind === "ready"
+                  ? { kind: "ready", bundle: createEmptyBundle(current.bundle.config?.roots ?? []) }
+                  : { kind: "ready", bundle: createEmptyBundle() },
+              );
+              setSelectedRows([]);
+              setSelectedPath(null);
+              setLiveSkipReasons([]);
+              setLiveTaskId(null);
+              showToast(lang === "zh" ? "扫描已取消，列表已清空。" : "Scan cancelled. List cleared.");
+            }
+
+            if (status.status === "failed") {
+              setApiError(status.error ?? (lang === "zh" ? "扫描失败" : "Scan failed"));
+            }
+          }
+
+          if (finalDataReady) {
+            setLivePollingTaskId(null);
+          }
+          return;
+        }
+
+        if (!terminal && status.totalRecords > recordCursor) {
+          const chunk = await getLiveScanRecordsFromApi(livePollingTaskId, recordCursor, 2000);
           if (disposed) return;
           setRecordCursor(chunk.nextFrom);
           if (chunk.records.length > 0) {
@@ -1251,33 +1483,6 @@ export function App() {
             },
           };
         });
-
-        if (status.status === "finished") {
-          setScanBusy(false);
-          showToast(`${t(lang, "scanDone")}: ${status.taskId}`);
-        }
-
-        if (status.status === "paused") {
-          setScanBusy(false);
-          showToast(lang === "zh" ? "扫描已暂停，仅保留已扫描内容。" : "Scan paused. Showing scanned content only.");
-        }
-
-        if (status.status === "cancelled") {
-          setScanBusy(false);
-          setState((current) =>
-            current.kind === "ready"
-              ? { kind: "ready", bundle: createEmptyBundle(current.bundle.config?.roots ?? []) }
-              : { kind: "ready", bundle: createEmptyBundle() },
-          );
-          setSelectedRows([]);
-          setSelectedPath(null);
-          showToast(lang === "zh" ? "扫描已取消，列表已清空。" : "Scan cancelled. List cleared.");
-        }
-
-        if (status.status === "failed") {
-          setScanBusy(false);
-          setApiError(status.error ?? (lang === "zh" ? "扫描失败" : "Scan failed"));
-        }
       } catch (error) {
         if (disposed) return;
         setScanBusy(false);
@@ -1295,7 +1500,7 @@ export function App() {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [liveTaskId, recordCursor, lang]);
+  }, [livePollingTaskId, recordCursor, lang]);
 
   const startScan = async () => {
     const root = scanRoot.trim();
@@ -1308,17 +1513,24 @@ export function App() {
     try {
       const payload = await startScanFromApi(root);
       setLiveTaskId(payload.taskId);
+      setLivePollingTaskId(payload.taskId);
       setLiveStatus(payload.status);
       setLivePhase("indexing");
       setLivePhaseProgress({ stage: "indexing", completed: 0, total: 0 });
       setLiveElapsedMs(0);
       setLiveStats(null);
+      setLiveSkipReasons([]);
+      setScanCompletePendingAck(false);
       setLastIndexedAt(null);
       setRecordCursor(0);
       setState({ kind: "ready", bundle: createEmptyBundle([root]) });
       setSelectedRiskKinds([]);
       setSelectedRows([]);
       setSelectedPath(null);
+      setSelectedRiskFocus(null);
+      terminalNotifiedTaskRef.current = null;
+      finalBundleLoadedTaskRef.current = null;
+      existsSyncCursorRef.current = 0;
       showToast(lang === "zh" ? `扫描已启动：${payload.taskId}` : `Scan started: ${payload.taskId}`);
     } catch (error) {
       setLiveStatus("failed");
@@ -1339,6 +1551,62 @@ export function App() {
     }
   };
 
+  const startDedupe = async () => {
+    if (!liveTaskId || scanBusy || rows.length === 0) {
+      return;
+    }
+
+    const selectedFileSet = new Set(bundle.records.map((record) => record.path));
+    const selectedForDedupe = new Set<string>();
+    const selectedPathSet = new Set(selectedRows);
+    const selectedDirectoryPaths = selectedRows.filter((rowPath) => {
+      const row = allDisplayRowMap.get(rowPath);
+      return row ? isDirectorySummary(row) : false;
+    });
+
+    for (const selectedPath of selectedPathSet) {
+      if (selectedFileSet.has(selectedPath)) {
+        selectedForDedupe.add(selectedPath);
+      }
+    }
+
+    if (selectedDirectoryPaths.length > 0) {
+      for (const record of bundle.records) {
+        for (const dir of selectedDirectoryPaths) {
+          if (record.path === dir || record.path.startsWith(`${dir}/`) || record.path.startsWith(`${dir}\\`)) {
+            selectedForDedupe.add(record.path);
+            break;
+          }
+        }
+      }
+    }
+
+    const selectedPaths = [...selectedForDedupe];
+    if (selectedRows.length > 0 && selectedPaths.length === 0) {
+      showToast(lang === "zh" ? "当前勾选没有可查重文件。" : "No dedupe-ready files in current selection.");
+      return;
+    }
+
+    try {
+      setScanBusy(true);
+      setApiError("");
+      setLiveStatus("running");
+      setLivePhase("dedupe");
+      setLivePhaseProgress({ stage: "quick_hash", completed: 0, total: 0 });
+      setScanCompletePendingAck(false);
+      setLivePollingTaskId(liveTaskId);
+      await startDedupeFromApi(liveTaskId, selectedPaths.length > 0 ? selectedPaths : undefined);
+      showToast(
+        selectedPaths.length > 0
+          ? (lang === "zh" ? `已按勾选项启动查重（${selectedPaths.length.toLocaleString()} 文件）。` : `Deduplication started for selected items (${selectedPaths.length.toLocaleString()} files).`)
+          : (lang === "zh" ? "查重已启动。" : "Duplicate analysis started."),
+      );
+    } catch (error) {
+      setScanBusy(false);
+      setApiError(formatUiError(error, lang));
+    }
+  };
+
   const cancelScan = async () => {
     if (!liveTaskId || !scanBusy) {
       return;
@@ -1346,6 +1614,8 @@ export function App() {
     try {
       await cancelLiveScanFromApi(liveTaskId);
       setScanBusy(false);
+      setLiveTaskId(null);
+      setLivePollingTaskId(null);
       setLiveStatus("cancelled");
       setLivePhase("finished");
       setState((current) =>
@@ -1356,10 +1626,43 @@ export function App() {
       setRecordCursor(0);
       setSelectedRows([]);
       setSelectedPath(null);
+      setLiveSkipReasons([]);
+      setScanCompletePendingAck(false);
+      existsSyncCursorRef.current = 0;
       showToast(lang === "zh" ? "扫描已取消，列表已清空。" : "Scan cancelled. List cleared.");
     } catch (error) {
       setApiError(formatUiError(error, lang));
     }
+  };
+
+  const clearIndexedList = () => {
+    if (scanBusy) {
+      return;
+    }
+    setState((current) =>
+      current.kind === "ready"
+        ? { kind: "ready", bundle: createEmptyBundle(current.bundle.config?.roots ?? []) }
+        : { kind: "ready", bundle: createEmptyBundle(scanRoot.trim() ? [scanRoot.trim()] : []) },
+    );
+    setSelectedRows([]);
+    setSelectedPath(null);
+    setSelectedRiskFocus(null);
+    setSelectedDuplicateGroupId(null);
+    setLiveTaskId(null);
+    setLivePollingTaskId(null);
+    setLiveStatus(null);
+    setLivePhase(null);
+    setLivePhaseProgress(null);
+    setLiveElapsedMs(0);
+    setLiveStats(null);
+    setLiveSkipReasons([]);
+    setScanCompletePendingAck(false);
+    setLastIndexedAt(null);
+    setRecordCursor(0);
+    terminalNotifiedTaskRef.current = null;
+    finalBundleLoadedTaskRef.current = null;
+    existsSyncCursorRef.current = 0;
+    showToast(lang === "zh" ? "索引列表已清空，可重新扫描。" : "Indexed list cleared. Ready for a new scan.");
   };
 
   const bundle =
@@ -1373,6 +1676,14 @@ export function App() {
   const directoryRows = useMemo(
     () => buildDirectorySummaries(bundle.records, bundle.config?.roots ?? []),
     [bundle.records, bundle.config?.roots],
+  );
+  const allDisplayRows = useMemo<DisplayRow[]>(
+    () => [...fileRows, ...directoryRows],
+    [fileRows, directoryRows],
+  );
+  const allDisplayRowMap = useMemo(
+    () => new Map(allDisplayRows.map((row) => [row.path, row] as const)),
+    [allDisplayRows],
   );
   const selectedDuplicateGroup = useMemo(
     () => bundle.duplicateGroups.find((group) => group.id === selectedDuplicateGroupId) ?? null,
@@ -1508,29 +1819,41 @@ export function App() {
 
   useEffect(() => {
     if (!filteredRows.length) {
-      setSelectedPath(null);
+      if (!selectedRiskFocus) {
+        setSelectedPath(null);
+      }
       return;
     }
-    if (!selectedPath || !filteredRows.some((row) => row.path === selectedPath)) {
+    if (!selectedPath) {
       setSelectedPath(filteredRows[0].path);
+      return;
     }
-  }, [filteredRows, selectedPath]);
+    if (filteredRows.some((row) => row.path === selectedPath)) {
+      return;
+    }
+    if (selectedRiskFocus && allDisplayRowMap.has(selectedPath)) {
+      return;
+    }
+    setSelectedPath(filteredRows[0].path);
+  }, [filteredRows, selectedPath, selectedRiskFocus, allDisplayRowMap]);
 
-  const selectedRow = filteredRows.find((row) => row.path === selectedPath) ?? null;
+  const selectedRow = selectedPath ? allDisplayRowMap.get(selectedPath) ?? null : null;
 
-  const visibleRowRange = useMemo(() => {
-    const start = Math.max(0, tableStartIndex);
-    const visibleCount = Math.ceil(tableViewportHeight / TABLE_ROW_HEIGHT) + TABLE_OVERSCAN * 2;
-    const end = Math.min(filteredRows.length, start + visibleCount);
-    return { start, end };
-  }, [filteredRows.length, tableStartIndex, tableViewportHeight]);
-
-  const visibleRows = useMemo(
-    () => filteredRows.slice(visibleRowRange.start, visibleRowRange.end),
-    [filteredRows, visibleRowRange],
+  const pageCount = useMemo(
+    () => Math.max(1, Math.ceil(filteredRows.length / pageSize)),
+    [filteredRows.length, pageSize],
   );
-  const topSpacerHeight = visibleRowRange.start * TABLE_ROW_HEIGHT;
-  const bottomSpacerHeight = Math.max(0, (filteredRows.length - visibleRowRange.end) * TABLE_ROW_HEIGHT);
+
+  useEffect(() => {
+    if (pageIndex >= pageCount) {
+      setPageIndex(Math.max(0, pageCount - 1));
+    }
+  }, [pageIndex, pageCount]);
+
+  const currentPageRows = useMemo(() => {
+    const start = pageIndex * pageSize;
+    return filteredRows.slice(start, start + pageSize);
+  }, [filteredRows, pageIndex, pageSize]);
 
   const totalDisplayRows = useMemo(
     () => (showFiles ? fileRows.length : 0) + (showDirectories ? directoryRows.length : 0),
@@ -1593,10 +1916,10 @@ export function App() {
     return bundle.riskFlags.filter((risk) => set.has(risk.kind));
   }, [bundle.riskFlags, selectedRiskKinds]);
 
-  const filteredPaths = useMemo(() => filteredRows.map((row) => row.path), [filteredRows]);
+  const currentPagePaths = useMemo(() => currentPageRows.map((row) => row.path), [currentPageRows]);
   const selectedSet = useMemo(() => new Set(selectedRows), [selectedRows]);
-  const allSelected = filteredPaths.length > 0 && filteredPaths.every((path) => selectedSet.has(path));
-  const partialSelected = !allSelected && filteredPaths.some((path) => selectedSet.has(path));
+  const allSelected = currentPagePaths.length > 0 && currentPagePaths.every((path) => selectedSet.has(path));
+  const partialSelected = !allSelected && currentPagePaths.some((path) => selectedSet.has(path));
 
   useEffect(() => {
     if (selectAllRef.current) {
@@ -1605,30 +1928,15 @@ export function App() {
   }, [partialSelected]);
 
   useEffect(() => {
-    setTableStartIndex(0);
+    setPageIndex(0);
     if (tableWrapRef.current) {
       tableWrapRef.current.scrollTop = 0;
     }
-  }, [query, includedSuffixes, excludedSuffixes, minSizeBytes, maxSizeBytes, sortBy, sortDir]);
+  }, [query, includedSuffixes, excludedSuffixes, minSizeBytes, maxSizeBytes, sortBy, sortDir, pageSize, duplicateGroupFilterActive]);
 
   useEffect(() => {
     setShowAllSuffixes(false);
   }, [suffixSummaries.length]);
-
-  useEffect(() => {
-    const updateViewport = () => {
-      if (!tableWrapRef.current) {
-        return;
-      }
-      setTableViewportHeight(tableWrapRef.current.clientHeight || 520);
-    };
-
-    updateViewport();
-    window.addEventListener("resize", updateViewport);
-    return () => {
-      window.removeEventListener("resize", updateViewport);
-    };
-  }, []);
 
   useEffect(() => {
     const pathSet = new Set(filteredRows.map((row) => row.path));
@@ -1708,6 +2016,63 @@ export function App() {
 
     setSelectedRows([]);
   };
+
+  useEffect(() => {
+    if (!apiMode || scanBusy || state.kind !== "ready" || state.bundle.records.length === 0) {
+      existsSyncCursorRef.current = 0;
+      return;
+    }
+
+    let disposed = false;
+
+    const syncMissingPaths = async () => {
+      if (disposed || existsSyncRunningRef.current) {
+        return;
+      }
+
+      const records = state.kind === "ready" ? state.bundle.records : [];
+      if (records.length === 0) {
+        existsSyncCursorRef.current = 0;
+        return;
+      }
+
+      const start = existsSyncCursorRef.current >= records.length ? 0 : existsSyncCursorRef.current;
+      const batchPaths = records.slice(start, start + 200).map((row) => row.path);
+      if (batchPaths.length === 0) {
+        existsSyncCursorRef.current = 0;
+        return;
+      }
+
+      existsSyncRunningRef.current = true;
+      try {
+        const missing = await getMissingPathsFromApi(batchPaths);
+        if (disposed) {
+          return;
+        }
+
+        if (missing.length > 0) {
+          applyDeletion(missing, []);
+        }
+
+        const next = start + batchPaths.length;
+        existsSyncCursorRef.current = next >= records.length ? 0 : next;
+      } catch {
+        // Keep scan UX stable if file checks fail temporarily.
+      } finally {
+        existsSyncRunningRef.current = false;
+      }
+    };
+
+    void syncMissingPaths();
+    const timer = window.setInterval(() => {
+      void syncMissingPaths();
+    }, 2500);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [apiMode, scanBusy, state]);
 
   const removeSelectedItems = async () => {
     if (!apiMode) {
@@ -1943,10 +2308,23 @@ export function App() {
 
   const toggleSelectAllVisible = () => {
     if (allSelected) {
-      setSelectedRows((current) => current.filter((path) => !filteredPaths.includes(path)));
+      const pageSet = new Set(currentPagePaths);
+      setSelectedRows((current) => current.filter((path) => !pageSet.has(path)));
       return;
     }
-    setSelectedRows((current) => [...new Set([...current, ...filteredPaths])]);
+    setSelectedRows((current) => [...new Set([...current, ...currentPagePaths])]);
+  };
+
+  const canStartDedupe =
+    apiMode
+    && !scanBusy
+    && !!liveTaskId
+    && rows.length > 0
+    && livePhase === "finished"
+    && (liveStatus === "finished" || liveStatus === "paused");
+
+  const acknowledgeScanComplete = () => {
+    setScanCompletePendingAck(false);
   };
 
   const handleSuffixPointerDown = (event: React.PointerEvent<HTMLButtonElement>, suffix: string) => {
@@ -1975,7 +2353,30 @@ export function App() {
   };
 
   const toggleDuplicateGroupFilter = (groupId: string) => {
+    setSelectedRiskFocus(null);
     setSelectedDuplicateGroupId((current) => (current === groupId ? null : groupId));
+  };
+
+  const focusRiskFlag = (risk: RiskFlagView, index: number) => {
+    const exactRow = allDisplayRowMap.get(risk.filePath) ?? null;
+    const parentPath = getParentPath(risk.filePath);
+    const parentRow = parentPath ? allDisplayRowMap.get(parentPath) ?? null : null;
+    const resolvedRow = exactRow ?? parentRow;
+    const resolvedTarget: RiskFocusState["resolvedTarget"] = exactRow
+      ? "file"
+      : parentRow
+        ? "directory"
+        : "path";
+
+    setSelectedRiskFocus({
+      key: `${risk.filePath}:${risk.kind}:${index}`,
+      risk,
+      resolvedPath: resolvedRow?.path ?? null,
+      resolvedTarget,
+    });
+    if (resolvedRow) {
+      setSelectedPath(resolvedRow.path);
+    }
   };
 
   const cycleSort = (nextKey: SortKey) => {
@@ -2088,32 +2489,52 @@ export function App() {
             <div className="live-status-card">
               <div className="live-status-meta">
                 <div className="label-row compact"><span>{lang === "zh" ? "扫描状态" : "Scan status"}</span><InfoTip content={tipText.scanStatus} /></div>
-                <span>{lang === "zh" ? "扫描状态" : "Scan status"}: {liveStatus ?? (lang === "zh" ? "空闲" : "idle")}</span>
+                <span>{lang === "zh" ? "扫描状态" : "Scan status"}: {formatLiveStatusLabel(liveStatus, livePhase, lang)}</span>
                 <span>
-                  {lang === "zh" ? "阶段" : "Phase"}: {livePhase ?? (lang === "zh" ? "空闲" : "idle")}
-                  {livePhaseProgress && livePhaseProgress.total > 0
+                  {lang === "zh" ? "阶段" : "Phase"}: {formatLivePhaseLabel(livePhase, liveStatus, lang)}
+                  {livePhase === "dedupe" && livePhaseProgress && livePhaseProgress.total > 0
                     ? ` (${Math.min(100, Math.round((livePhaseProgress.completed / livePhaseProgress.total) * 100))}%)`
                     : ""}
                 </span>
                 <span>{lang === "zh" ? "已扫描文件" : "Indexed files"}: {(liveStats?.filesIndexed ?? rows.length).toLocaleString()}</span>
+                <span>{lang === "zh" ? "跳过项" : "Skipped"}: {(liveStats?.filesSkipped ?? 0).toLocaleString()}</span>
+                {liveSkipReasons.length > 0 ? (
+                  <span>
+                    {lang === "zh" ? "跳过明细" : "Skip breakdown"}: {liveSkipReasons.slice(0, 3).map((item) => `${formatSkipReasonLabel(item.reason, lang)} ${item.count.toLocaleString()}`).join(" / ")}
+                  </span>
+                ) : null}
                 <span>{lang === "zh" ? "已用时" : "Elapsed"}: {elapsedLabel}</span>
               </div>
               {isPossiblyStuck ? (
                 <p className="muted">{lang === "zh" ? "文件数长时间未增长，可能卡住或遇到慢目录。" : "File count has not grown for a while, scan may be stalled or on a slow directory."}</p>
               ) : null}
               <div className="panel-actions">
+                <button className="ghost-button" type="button" disabled={!canStartDedupe} onClick={startDedupe}>
+                  {selectedRows.length > 0
+                    ? (lang === "zh" ? "查重勾选项" : "Dedupe selected")
+                    : (lang === "zh" ? "开始查重" : "Start dedupe")}
+                </button>
                 <button className="ghost-button" type="button" disabled={!scanBusy} onClick={pauseScan}>
                   {lang === "zh" ? "暂停扫描" : "Pause scan"}
                 </button>
                 <button className="ghost-button danger" type="button" disabled={!scanBusy} onClick={cancelScan}>
                   {lang === "zh" ? "取消扫描" : "Cancel scan"}
                 </button>
+                <button className="ghost-button" type="button" disabled={scanBusy || rows.length === 0} onClick={clearIndexedList}>
+                  {lang === "zh" ? "清空索引" : "Clear index"}
+                </button>
               </div>
             </div>
 
-            <button className="ghost-button sidebar-primary" type="button" onClick={startScan} disabled={!apiMode || scanBusy}>
-              {scanBusy ? t(lang, "scanning") : t(lang, "startScan")}
-            </button>
+            {scanCompletePendingAck ? (
+              <button className="ghost-button sidebar-primary success" type="button" onClick={acknowledgeScanComplete}>
+                {lang === "zh" ? "扫描完成" : "Scan complete"}
+              </button>
+            ) : (
+              <button className="ghost-button sidebar-primary" type="button" onClick={startScan} disabled={!apiMode || scanBusy}>
+                {scanBusy ? t(lang, "scanning") : t(lang, "startScan")}
+              </button>
+            )}
 
             <label>
               <span className="label-row"><span>{t(lang, "search")}</span><InfoTip content={tipText.search} /></span>
@@ -2302,7 +2723,19 @@ export function App() {
               <p className="muted">{lang === "zh" ? "当前结果里没有风险标记。" : "No risk flags in this dataset."}</p>
             ) : null}
             {filteredRiskFlags.slice(0, 8).map((risk, index) => (
-              <div className="mini-item" key={`${risk.filePath}:${risk.kind}:${index}`}>
+              <div
+                className={`mini-item mini-item-button risk-item ${selectedRiskFocus?.key === `${risk.filePath}:${risk.kind}:${index}` ? "is-active risk-item-active" : ""}`}
+                key={`${risk.filePath}:${risk.kind}:${index}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => focusRiskFlag(risk, index)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    focusRiskFlag(risk, index);
+                  }
+                }}
+              >
                 <div>
                   <strong>{risk.kind}</strong>
                   <span>{risk.detail}</span>
@@ -2316,38 +2749,71 @@ export function App() {
 
         <main className="panel table-panel">
           <div className="panel-head">
-            <div>
-              <h2>{lang === "zh" ? "已索引文件/目录" : "Indexed Files / Directories"}</h2>
-              <span>
-                {filteredRows.length.toLocaleString()} {t(lang, "rows")}
-              </span>
-            </div>
-            <div className="panel-actions">
-              <label className="toggle-chip">
-                <input type="checkbox" checked={showFiles} disabled={duplicateGroupFilterActive} onChange={() => setShowFiles((current) => !current)} />
-                <span>{lang === "zh" ? "文件" : "Files"}</span>
-              </label>
-              <label className="toggle-chip">
-                <input type="checkbox" checked={showDirectories} disabled={duplicateGroupFilterActive} onChange={() => setShowDirectories((current) => !current)} />
-                <span>{lang === "zh" ? "目录" : "Directories"}</span>
-              </label>
-              <button className="ghost-button" type="button" disabled={!apiMode || selectedRows.length === 0} onClick={copySelectedItems}>
-                {lang === "zh" ? "复制选中项" : "Copy selected items"}
-              </button>
-              <button className="ghost-button danger" type="button" disabled={!apiMode || selectedRows.length === 0} onClick={removeSelectedItems}>
-                {lang === "zh" ? "删除选中项" : "Delete selected items"}
-              </button>
+            <div className="panel-head-grid panel-head-grid-4">
+              <div className="panel-head-title">
+                <h2>{lang === "zh" ? "已索引文件/目录" : "Indexed Files / Directories"}</h2>
+                <span className="panel-head-summary">
+                  {filteredRows.length.toLocaleString()} {t(lang, "rows")} · {lang === "zh" ? `第 ${Math.min(pageIndex + 1, pageCount)} / ${pageCount} 页` : `Page ${Math.min(pageIndex + 1, pageCount)} / ${pageCount}`}
+                </span>
+              </div>
+
+              <div className="panel-control-group">
+                <label className="toggle-chip">
+                  <input type="checkbox" checked={showFiles} disabled={duplicateGroupFilterActive} onChange={() => setShowFiles((current) => !current)} />
+                  <span>{lang === "zh" ? "文件" : "Files"}</span>
+                </label>
+                <label className="toggle-chip">
+                  <input type="checkbox" checked={showDirectories} disabled={duplicateGroupFilterActive} onChange={() => setShowDirectories((current) => !current)} />
+                  <span>{lang === "zh" ? "目录" : "Directories"}</span>
+                </label>
+              </div>
+
+              <div className="panel-control-group">
+                <button className="ghost-button" type="button" disabled={!apiMode || selectedRows.length === 0} onClick={copySelectedItems}>
+                  {lang === "zh" ? "复制选中项" : "Copy selected items"}
+                </button>
+                <button className="ghost-button danger" type="button" disabled={!apiMode || selectedRows.length === 0} onClick={removeSelectedItems}>
+                  {lang === "zh" ? "删除选中项" : "Delete selected items"}
+                </button>
+              </div>
+
+              <div className="panel-control-group panel-control-group-paging">
+                <select
+                  className="task-select"
+                  value={String(pageSize)}
+                  onChange={(event) => {
+                    const next = Number(event.target.value);
+                    if (Number.isFinite(next) && PAGE_SIZE_OPTIONS.includes(next as typeof PAGE_SIZE_OPTIONS[number])) {
+                      setPageSize(next);
+                    }
+                  }}
+                  aria-label={lang === "zh" ? "每页条数" : "Rows per page"}
+                >
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <option key={size} value={size}>{lang === "zh" ? `每页 ${size}` : `${size} / page`}</option>
+                  ))}
+                </select>
+                <div className="panel-head-pager panel-head-pager-split">
+                  <button className="ghost-button" type="button" disabled={pageIndex <= 0} onClick={() => setPageIndex((current) => Math.max(0, current - 1))}>
+                    {lang === "zh" ? "上一页" : "Prev"}
+                  </button>
+                  <button className="ghost-button" type="button" disabled={pageIndex >= pageCount - 1} onClick={() => setPageIndex((current) => Math.min(pageCount - 1, current + 1))}>
+                    {lang === "zh" ? "下一页" : "Next"}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
-          <div
-            className="table-wrap"
-            ref={tableWrapRef}
-            onScroll={(event) => {
-              const nextStart = Math.max(0, Math.floor(event.currentTarget.scrollTop / TABLE_ROW_HEIGHT) - TABLE_OVERSCAN);
-              setTableStartIndex((current) => (current === nextStart ? current : nextStart));
-            }}
-          >
+          <div className="table-wrap" ref={tableWrapRef}>
             <table>
+              <colgroup>
+                <col style={{ width: "44px" }} />
+                <col style={{ width: "16%" }} />
+                <col style={{ width: "36%" }} />
+                <col style={{ width: "23%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "16%" }} />
+              </colgroup>
               <thead>
                 <tr>
                   <th className="checkbox-col">
@@ -2356,7 +2822,7 @@ export function App() {
                       type="checkbox"
                       checked={allSelected}
                       onChange={toggleSelectAllVisible}
-                      aria-label={lang === "zh" ? "全选" : "Select all"}
+                      aria-label={lang === "zh" ? "全选当前页" : "Select current page"}
                     />
                   </th>
                   <th>
@@ -2387,18 +2853,16 @@ export function App() {
                 </tr>
               </thead>
               <tbody>
-                {topSpacerHeight > 0 ? (
-                  <tr aria-hidden="true" className="spacer-row">
-                    <td colSpan={TABLE_COLUMN_COUNT} style={{ height: `${topSpacerHeight}px`, padding: 0, border: 0 }} />
-                  </tr>
-                ) : null}
-                {visibleRows.map((row) => {
+                {currentPageRows.map((row) => {
                   const modifiedParts = formatDateParts(row.mtimeMs, lang, timeFormat, dateFormat);
                   return (
                     <tr
                       key={row.path}
-                      className={row.path === selectedPath ? "selected" : ""}
-                      onClick={() => setSelectedPath(row.path)}
+                      className={`${row.path === selectedPath ? "selected" : ""} ${selectedRiskFocus?.resolvedPath === row.path ? "risk-selected" : ""}`.trim()}
+                      onClick={() => {
+                        setSelectedRiskFocus(null);
+                        setSelectedPath(row.path);
+                      }}
                     >
                       <td className="checkbox-col" onClick={(event) => event.stopPropagation()}>
                         <input
@@ -2421,11 +2885,6 @@ export function App() {
                     </tr>
                   );
                 })}
-                {bottomSpacerHeight > 0 ? (
-                  <tr aria-hidden="true" className="spacer-row">
-                    <td colSpan={TABLE_COLUMN_COUNT} style={{ height: `${bottomSpacerHeight}px`, padding: 0, border: 0 }} />
-                  </tr>
-                ) : null}
               </tbody>
             </table>
           </div>
@@ -2434,6 +2893,35 @@ export function App() {
         <div className="detail-column">
           <aside className="panel detail-panel">
             <h2>{t(lang, "details")}</h2>
+            {selectedRiskFocus ? (
+              <div className="signal-box risk-signal-box">
+                <h3>{lang === "zh" ? "当前风险聚焦" : "Current risk focus"}</h3>
+                <div className="detail-grid risk-detail-grid">
+                  <div>
+                    <span>{lang === "zh" ? "风险类型" : "Risk type"}</span>
+                    <strong>{selectedRiskFocus.risk.kind}</strong>
+                  </div>
+                  <div>
+                    <span>{lang === "zh" ? "定位方式" : "Resolved as"}</span>
+                    <strong>
+                      {selectedRiskFocus.resolvedTarget === "file"
+                        ? (lang === "zh" ? "风险文件本体" : "risk file")
+                        : selectedRiskFocus.resolvedTarget === "directory"
+                          ? (lang === "zh" ? "上级目录" : "parent directory")
+                          : (lang === "zh" ? "原始路径" : "raw path")}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>{lang === "zh" ? "风险详情" : "Risk detail"}</span>
+                    <strong>{selectedRiskFocus.risk.detail}</strong>
+                  </div>
+                  <div>
+                    <span>{lang === "zh" ? "风险路径" : "Risk path"}</span>
+                    <strong>{selectedRiskFocus.risk.filePath}</strong>
+                  </div>
+                </div>
+              </div>
+            ) : null}
             {selectedRow ? (
               <div className="detail-grid">
                 <div>
